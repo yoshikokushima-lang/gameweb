@@ -1,0 +1,410 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>3D Runner Game (影なし最終版)</title>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+    <style>
+        body { margin: 0; overflow: hidden; }
+        canvas { display: block; }
+        
+        /* ゲームオーバーテキストのスタイル */
+        #gameOverText {
+            position: absolute;
+            top: 40%; 
+            left: 50%;
+            transform: translate(-50%, -50%);
+            color: red;
+            font-size: 48px;
+            font-weight: bold;
+            display: none;
+            background-color: rgba(0, 0, 0, 0.7);
+            padding: 20px;
+            border-radius: 10px;
+            z-index: 10;
+            text-align: center;
+        }
+        
+        /* スコアテキストのスタイル */
+        #scoreText {
+            position: absolute;
+            top: 20px;
+            left: 20px;
+            color: black;
+            font-size: 24px;
+            font-weight: bold;
+            background-color: rgba(255, 255, 255, 0.7);
+            padding: 10px;
+            border-radius: 5px;
+            z-index: 10;
+        }
+
+        /* リスタートボタンのスタイル */
+        #restartButton {
+            position: absolute;
+            top: 60%; 
+            left: 50%;
+            transform: translate(-50%, -50%);
+            padding: 15px 30px;
+            font-size: 28px;
+            font-weight: bold;
+            color: white;
+            background-color: green;
+            border: 3px solid white;
+            border-radius: 10px;
+            cursor: pointer;
+            display: none; 
+            z-index: 11;
+            transition: background-color 0.2s;
+        }
+        #restartButton:hover {
+            background-color: darkgreen;
+        }
+    </style>
+</head>
+<body>
+
+    <div id="gameOverText">GAME OVER</div>
+    <div id="scoreText">Score: 0</div>
+    <button id="restartButton">RESTART</button> 
+    
+    <script>
+        // ===============================================
+        // 1. シーン、カメラ、レンダラーのセットアップ
+        // ===============================================
+        const scene = new THREE.Scene();
+        scene.background = new THREE.Color(0x87ceeb);
+
+        const camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 1000);
+        const renderer = new THREE.WebGLRenderer({ antialias: true });
+
+        renderer.setSize(window.innerWidth, window.innerHeight);
+        document.body.appendChild(renderer.domElement);
+
+        // 💡 影の無効化
+        renderer.shadowMap.enabled = false; 
+
+        // HTML要素の取得
+        const gameOverElement = document.getElementById('gameOverText');
+        const scoreElement = document.getElementById('scoreText');
+        const restartButton = document.getElementById('restartButton');
+
+        // --- 地面 (動かない) の作成 ---
+        const groundGeometry = new THREE.PlaneGeometry(10, 1000, 10, 100); 
+        // 💡 影を受けない
+        const groundMaterial = new THREE.MeshStandardMaterial({ color: 0x808080, side: THREE.DoubleSide });
+        const ground = new THREE.Mesh(groundGeometry, groundMaterial);
+        ground.rotation.x = Math.PI / 2; 
+        ground.position.y = 0; 
+        ground.position.z = 0; 
+        
+        scene.add(ground);
+
+        // --- プレイヤー (黒) の作成 ---
+        const playerSize = 1;
+        const playerGeometry = new THREE.BoxGeometry(playerSize, playerSize, playerSize);
+        // 💡 影を落とさない
+        const playerMaterial = new THREE.MeshStandardMaterial({ color: 0x000000 });
+        const player = new THREE.Mesh(playerGeometry, playerMaterial);
+        const playerFloorY = playerSize / 2; 
+        
+        scene.add(player);
+
+        // --- 光源のセットアップ ---
+        
+        // 1. 環境光
+        const ambientLight = new THREE.AmbientLight(0xffffff, 0.5); 
+        scene.add(ambientLight);
+
+        // 2. 平行光源 (影を落とさない)
+        const directionalLight = new THREE.DirectionalLight(0xffffff, 1.0);
+        
+        directionalLight.position.set(5, 10, -10); 
+        
+        // 💡 影を落とす設定を無効化
+        // directionalLight.castShadow = false; (デフォルト値だが、明示的に削除)
+        
+        directionalLight.target.position.set(0, 0, 0); 
+        scene.add(directionalLight.target);
+        
+        // 💡 影の設定に関する記述をすべて削除
+        
+        scene.add(directionalLight);
+
+        // --- カメラ位置のオフセット設定 ---
+        const cameraOffsetZ = 4;   
+        const cameraOffsetY = 4.5; 
+        
+        // ===============================================
+        // 2. ゲームのパラメーター (動的難易度調整)
+        // ===============================================
+        
+        const baseSpeed = 0.5;
+        let currentSpeed = baseSpeed;
+        let difficultyLevel = 0;
+        const difficultyIncrementScore = 10; 
+        const speedIncreaseFactor = 0.00025; 
+        const minObstacleInterval = 3; 
+        const lateralSpeed = 0.1;   
+        const maxLateralPos = 4.5;
+        const BASE_GRAVITY = -0.02; 
+        const JUMP_VELOCITY_INITIAL = 0.45;
+        const FAST_FALL_MULTIPLIER = 4; 
+        let verticalVelocity = 0;     
+        let isJumping = false;
+        let isFastFalling = false; 
+        let isGameOver = false;
+        let score = 0;
+        const scoreMultiplier = 2; 
+        const obstacles = [];
+        let nextObstacleTime = 0;
+        const baseObstacleSpawnInterval = 5; 
+        const lanePositions = [ -4.0, -2.0, 0.0, 2.0, 4.0 ];
+        const resetThreshold = -100; 
+        const resetOffset = -resetThreshold; 
+
+        // キー入力状態
+        const keys = {
+            ArrowLeft: false,
+            ArrowRight: false,
+            Space: false,
+            ArrowDown: false
+        };
+
+        let animationId; 
+
+        // ===============================================
+        // 3. ゲームの初期化/リセット関数 (省略)
+        // ===============================================
+        function initializeGame() {
+            isGameOver = false;
+            score = 0;
+            difficultyLevel = 0;
+            currentSpeed = baseSpeed;
+            verticalVelocity = 0;
+            isJumping = false;
+            isFastFalling = false; 
+
+            player.position.x = 0;
+            player.position.y = playerFloorY; 
+            player.position.z = 5; 
+
+            obstacles.forEach(obstacle => scene.remove(obstacle));
+            obstacles.length = 0; 
+            nextObstacleTime = 0;
+
+            gameOverElement.style.display = 'none';
+            restartButton.style.display = 'none';
+            scoreElement.textContent = `Score: 0`; 
+
+            if (!animationId) {
+                animate();
+            }
+        }
+        
+        restartButton.addEventListener('click', initializeGame);
+
+        // ===============================================
+        // 4. 難易度更新関数 (省略)
+        // ===============================================
+        function updateDifficulty() {
+            const newLevel = Math.floor(score / difficultyIncrementScore);
+            if (newLevel > difficultyLevel) {
+                difficultyLevel = newLevel;
+                currentSpeed = baseSpeed + (difficultyLevel * speedIncreaseFactor);
+            }
+        }
+
+        // ===============================================
+        // 5. 障害物生成関数 (省略)
+        // ===============================================
+        function createObstacle() {
+            const width = 1 + Math.random(); 
+            const height = 1 + Math.random() * 1.5; 
+            const depth = 0.5;
+            
+            const geometry = new THREE.BoxGeometry(width, height, depth);
+            const material = new THREE.MeshStandardMaterial({ color: 0xff0000 }); 
+            const obstacle = new THREE.Mesh(geometry, material);
+
+            const randomIndex = Math.floor(Math.random() * lanePositions.length);
+            const laneX = lanePositions[randomIndex];
+            
+            obstacle.position.x = laneX;
+            obstacle.position.y = height / 2; 
+            obstacle.position.z = player.position.z - 100; 
+            
+            // 💡 影を落とす/受ける設定を削除
+            
+            scene.add(obstacle);
+            obstacles.push(obstacle);
+        }
+
+        // ===============================================
+        // 6. キーボードイベントリスナー (省略)
+        // ===============================================
+        window.addEventListener('keydown', (event) => {
+            if (isGameOver) return; 
+
+            if (keys.hasOwnProperty(event.code)) {
+                keys[event.code] = true;
+            }
+            
+            if (event.code === 'Space') {
+                if (!isJumping) {
+                    isJumping = true;
+                    verticalVelocity = JUMP_VELOCITY_INITIAL; 
+                } else if (!isFastFalling) {
+                    isFastFalling = true; 
+                }
+            }
+        });
+
+        window.addEventListener('keyup', (event) => {
+            if (keys.hasOwnProperty(event.code)) {
+                keys[event.code] = false;
+            }
+        });
+
+        // ===============================================
+        // 7. アニメーションループ (メインゲームロジック)
+        // ===============================================
+        function animate() {
+            if (isGameOver) {
+                cancelAnimationFrame(animationId);
+                animationId = null; 
+                return;
+            }
+
+            animationId = requestAnimationFrame(animate);
+
+            // 💡 スコア加算と難易度更新
+            score += scoreMultiplier;
+            scoreElement.textContent = `Score: ${Math.floor(score)}`;
+            updateDifficulty();
+
+            // --- A. 奥への自動移動 (動的スピードを適用) ---
+            player.position.z -= currentSpeed;
+
+            // --- B. 左右の移動 (省略) ---
+            if (keys.ArrowLeft) {
+                player.position.x -= lateralSpeed;
+            }
+            if (keys.ArrowRight) {
+                player.position.x += lateralSpeed;
+            }
+            player.position.x = Math.max(-maxLateralPos, Math.min(maxLateralPos, player.position.x));
+            
+            // 💡 影の追従ロジックを削除
+            
+            // --- C. カメラの追従 (省略) ---
+            camera.position.x = player.position.x;
+            camera.position.z = player.position.z + cameraOffsetZ; 
+            camera.position.y = player.position.y + cameraOffsetY; 
+            
+            const lookAtY = player.position.y - 0.75; 
+            const lookAtZ = player.position.z - 10;
+            camera.lookAt(player.position.x, lookAtY, lookAtZ);
+
+            // ===============================================
+            // ステージの巻き戻し (無限ランナー効果)
+            // ===============================================
+            if (player.position.z < resetThreshold) {
+                const offset = resetOffset;
+                player.position.z += offset;
+                
+                obstacles.forEach(obstacle => {
+                    obstacle.position.z += offset;
+                });
+                
+                nextObstacleTime += offset;
+                camera.position.z = player.position.z + cameraOffsetZ;
+                
+                // 💡 光源のZ座標リセットロジックを削除 (必要なし)
+            }
+
+            // --- D. ジャンプ処理 (省略) ---
+            if (isJumping) {
+                let currentGravity = BASE_GRAVITY;
+                
+                if (isFastFalling) {
+                    currentGravity = BASE_GRAVITY * FAST_FALL_MULTIPLIER;
+                }
+
+                verticalVelocity += currentGravity; 
+                player.position.y += verticalVelocity;
+
+                if (player.position.y <= playerFloorY) {
+                    player.position.y = playerFloorY; 
+                    isJumping = false; 
+                    verticalVelocity = 0; 
+                    isFastFalling = false; 
+                }
+            }
+            
+            // --- E. 障害物の生成と衝突判定 (省略) ---
+            
+            const currentObstacleInterval = Math.max(
+                minObstacleInterval, 
+                baseObstacleSpawnInterval - (difficultyLevel * 0.01) 
+            );
+
+            if (player.position.z < nextObstacleTime) {
+                createObstacle();
+                nextObstacleTime = player.position.z - currentObstacleInterval - (Math.random() * 3); 
+            }
+
+            for (let i = 0; i < obstacles.length; i++) {
+                const obstacle = obstacles[i];
+                
+                // 衝突判定ロジックは変更なし
+                const playerHalfX = playerSize / 2;
+                const playerHalfY = playerSize / 2;
+                const playerHalfZ = playerSize / 2;
+                const obstacleHalfX = obstacle.geometry.parameters.width / 2;
+                const obstacleHalfY = obstacle.geometry.parameters.height / 2;
+                const obstacleHalfZ = obstacle.geometry.parameters.depth / 2;
+
+                const dx = Math.abs(player.position.x - obstacle.position.x);
+                const dy = Math.abs(player.position.y - obstacle.position.y);
+                const dz = Math.abs(player.position.z - obstacle.position.z);
+
+                if (
+                    dx < playerHalfX + obstacleHalfX &&
+                    dy < playerHalfY + obstacleHalfY &&
+                    dz < playerHalfZ + obstacleHalfZ
+                ) {
+                    isGameOver = true;
+                    gameOverElement.textContent = `GAME OVER - Final Score: ${Math.floor(score)}`;
+                    gameOverElement.style.display = 'block';
+                    restartButton.style.display = 'block'; 
+                    break; 
+                }
+
+                // 障害物がカメラの後ろに行き過ぎたら削除
+                if (obstacle.position.z > player.position.z + 10) {
+                    scene.remove(obstacle);
+                    obstacles.splice(i, 1);
+                    i--;
+                }
+            }
+
+            // 描画
+            renderer.render(scene, camera);
+        }
+
+        // ゲームの初回起動
+        initializeGame();
+
+        // 8. ウィンドウサイズ変更時の調整 (省略)
+        window.addEventListener('resize', () => {
+            camera.aspect = window.innerWidth / window.innerHeight;
+            camera.updateProjectionMatrix();
+            renderer.setSize(window.innerWidth, window.innerHeight);
+        });
+
+    </script>
+
+</body>
+</html>
