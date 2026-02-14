@@ -1,7 +1,74 @@
-<div class="game-item">
-  <strong>ランナーゲーム</strong>
-  <a href="Runner Game.html">
-    <img src="runner.png" alt="ランナーゲームの画像">
-  </a>
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <title>Academic Search Tool</title> <script src="https://cdn.jsdelivr.net/npm/vue@3/dist/vue.global.js"></script>
+    <style>
+        body { background: #000; color: #ccc; font-family: sans-serif; }
+        .container { max-width: 800px; margin: auto; padding: 20px; }
+        input { width: 70%; padding: 10px; background: #222; border: 1px solid #444; color: #fff; }
+        .video-item { margin: 10px 0; cursor: pointer; border-bottom: 1px solid #333; padding: 10px; }
+        iframe { width: 100%; aspect-ratio: 16/9; }
+    </style>
+</head>
+<body>
+<div id="app" class="container">
+    <div v-if="!currentVideo">
+        <input v-model="query" @keyup.enter="search" placeholder="Search resources...">
+        <button @click="search" style="padding:10px">Search</button>
+        <div v-for="v in videos" :key="v.videoId" class="video-item" @click="play(v.videoId)">
+            <strong>{{ v.title }}</strong><br>
+            <small>{{ v.author }}</small>
+        </div>
+    </div>
+    <div v-else>
+        <button @click="currentVideo = null" style="margin-bottom:10px">Back</button>
+        <iframe :src="playerUrl" allowfullscreen></iframe>
+    </div>
 </div>
 
+<script>
+const { createApp, ref } = Vue;
+createApp({
+    setup() {
+        const query = ref('');
+        const videos = ref([]);
+        const currentVideo = ref(null);
+        const playerUrl = ref('');
+
+        // 学校でブロックされにくいインスタンスのみを厳選
+        const instances = [
+            "https://invidious.drgns.space",
+            "https://inv.nittis.it",
+            "https://invidious.lunar.icu"
+        ];
+
+        const search = async () => {
+            for (let base of instances) {
+                try {
+                    // CORSプロキシを介さず、まずは「Cloudflare Workers」等の公共プロキシを試す
+                    // 今回はテストとして直接アクセスを試みるが、
+                    // 本来は自分で立てたWorkerを経由させるのが最強。
+                    const res = await fetch(`${base}/api/v1/search?q=${encodeURIComponent(query.value)}`);
+                    if (res.ok) {
+                        videos.value = await res.json();
+                        break;
+                    }
+                } catch (e) {
+                    console.log(base + " is blocked");
+                }
+            }
+        };
+
+        const play = (id) => {
+            currentVideo.value = id;
+            // プレイヤー自体もYouTube公式ではなく、広告除去された埋め込みを使用
+            playerUrl.value = `${instances[0]}/embed/${id}?autoplay=1`;
+        };
+
+        return { query, videos, search, play, currentVideo, playerUrl };
+    }
+}).mount('#app');
+</script>
+</body>
+</html>
